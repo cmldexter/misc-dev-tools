@@ -1,0 +1,42 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# ==============================================================================
+# Script Name: sync-gitlab-github
+# Description: Fetches all remote branches from a specified GitHub remote and
+#              pushes them directly to a specified GitLab remote to ensure both
+#              repositories are synchronized. 
+#
+# When to use: Use this script when you maintain mirrors between GitHub and
+#              GitLab and need to forcefully pull all branches from GitHub
+#              and push them identically to GitLab. It's particularly useful 
+#              for keeping a backup or matching CI/CD environments across 
+#              different git hosting platforms.
+# ==============================================================================
+
+GITHUB_REMOTE="github"
+GITLAB_REMOTE="origin"
+
+echo "==> Fetching remotes"
+git fetch --prune "$GITHUB_REMOTE"
+git fetch --prune "$GITLAB_REMOTE"
+
+echo "==> Syncing branches from $GITHUB_REMOTE → $GITLAB_REMOTE"
+
+git for-each-ref --format='%(refname:short)' "refs/remotes/$GITHUB_REMOTE/" \
+  | grep -v "^$GITHUB_REMOTE/HEAD$" \
+  | sed "s#^$GITHUB_REMOTE/##" \
+  | while read -r b; do
+
+  echo ""
+  echo "---- Branch: $b"
+
+  if [ -n "$b" ]; then
+    git checkout -B "$b" "$GITHUB_REMOTE/$b"
+    git push "$GITLAB_REMOTE" "$b:$b"
+  fi
+
+done
+
+echo ""
+echo "✔ Sync complete"
