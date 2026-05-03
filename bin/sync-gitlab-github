@@ -1,5 +1,4 @@
 #!/usr/bin/env bash
-set -euo pipefail
 
 # ==============================================================================
 # Script Name: sync-gitlab-github
@@ -14,29 +13,65 @@ set -euo pipefail
 #              different git hosting platforms.
 # ==============================================================================
 
-GITHUB_REMOTE="github"
-GITLAB_REMOTE="origin"
+set -euo pipefail
+
+
+GITHUB_REMOTE="${GITHUB_REMOTE:-github}"
+GITLAB_REMOTE="${GITLAB_REMOTE:-origin}"
+
+git rev-parse --is-inside-work-tree >/dev/null 2>&1 || {
+  echo "ERROR: not inside a git repository"
+  exit 1
+}
+
+git remote get-url "$GITHUB_REMOTE" >/dev/null 2>&1 || {
+  echo "ERROR: remote '$GITHUB_REMOTE' is not configured in this repo"
+  echo "Add it with:"
+  echo "  git remote add $GITHUB_REMOTE git@github.com:<ORG_OR_USER>/$(basename "$(git rev-parse --show-toplevel)").git"
+  exit 1
+}
+
+git remote get-url "$GITLAB_REMOTE" >/dev/null 2>&1 || {
+  echo "ERROR: remote '$GITLAB_REMOTE' is not configured in this repo"
+  exit 1
+}
+
+if ! git diff --quiet || ! git diff --cached --quiet; then
+  echo "ERROR: working tree has uncommitted changes"
+  exit 1
+fi
+
+START_BRANCH="$(git rev-parse --abbrev-ref HEAD)"
 
 echo "==> Fetching remotes"
 git fetch --prune "$GITHUB_REMOTE"
 git fetch --prune "$GITLAB_REMOTE"
 
-echo "==> Syncing branches from $GITHUB_REMOTE → $GITLAB_REMOTE"
+echo "==> Syncing branches from $GITHUB_REMOTE -> $GITLAB_REMOTE"
 
-git for-each-ref --format='%(refname:short)' "refs/remotes/$GITHUB_REMOTE/" \
-  | grep -v "^$GITHUB_REMOTE/HEAD$" \
-  | sed "s#^$GITHUB_REMOTE/##" \
-  | while read -r b; do
+BRANCHES="$(
+  git for-each-ref --format='%(refname:lstrip=3)' "refs/remotes/${GITHUB_REMOTE}" \
+    | grep -v '^HEAD$' \
+    | sort -u
+)"
 
-  echo ""
+if [ -z "$BRANCHES" ]; then
+  echo "No branches found under remote '$GITHUB_REMOTE'"
+  exit 0
+fi
+
+echo "$BRANCHES" | while IFS= read -r b; do
+  [ -n "$b" ] || continue
+
+  echo
   echo "---- Branch: $b"
 
-  if [ -n "$b" ]; then
-    git checkout -B "$b" "$GITHUB_REMOTE/$b"
-    git push "$GITLAB_REMOTE" "$b:$b"
-  fi
-
+  git checkout -B "$b" "$GITHUB_REMOTE/$b"
+  git push "$GITLAB_REMOTE" "$b:$b"
 done
 
-echo ""
+echo
+echo "==> Returning to $START_BRANCH"
+git checkout "$START_BRANCH" >/dev/null 2>&1 || true
+
 echo "✔ Sync complete"

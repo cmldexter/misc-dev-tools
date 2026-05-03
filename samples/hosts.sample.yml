@@ -1,0 +1,28 @@
+all:
+  children:
+    k8s_cluster:
+      vars:
+        ansible_user: k8s-admin
+        ansible_ssh_private_key_file: ~/.ssh/id_ed25519_k8s_admin
+      hosts:
+        my-k8s-master:
+          ansible_host: 192.168.1.10
+        my-k8s-worker-01:
+          ansible_host: 192.168.1.11
+        my-k8s-worker-02:
+          ansible_host: 192.168.1.12
+    database_servers:
+      vars:
+        ansible_user: db-admin
+        ansible_ssh_private_key_file: ~/.ssh/id_rsa_db
+      hosts:
+        my-db-primary:
+          ansible_host: 192.168.1.20
+        my-db-replica:
+          ansible_host: 192.168.1.21
+    web_servers:
+      hosts:
+        my-web-01:
+          ansible_host: 192.168.1.30
+          ansible_user: webmaster
+          ansible_ssh_private_key_file: ~/.ssh/id_ed25519_web
