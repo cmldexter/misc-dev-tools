@@ -1,0 +1,69 @@
+#!/bin/bash
+# hermes-remote — Instant Hermes Agent CLI from any workstation.
+#
+# Wraps SSH + kubectl exec into a single command so you can interact
+# with the Hermes Agent pod without manually chaining connections.
+#
+# Usage:
+#   hermes-remote                        # Interactive REPL
+#   hermes-remote -z "prompt"            # One-shot query
+#   hermes-remote --tui                  # TUI mode
+#   hermes-remote sessions list          # Any hermes subcommand
+#   hermes-remote --shell                # Drop into pod bash (debug)
+#
+# Configuration (checked in order):
+#   1. Environment variables: HERMES_K8S_HOST, HERMES_K8S_USER, HERMES_SSH_KEY
+#   2. Config file: ~/.config/hermes-remote.conf
+#   3. If neither is set, the script will exit with setup instructions.
+#
+# Config file format (~/.config/hermes-remote.conf):
+#   K8S_HOST=your-k8s-hostname-or-ip
+#   K8S_USER=your-ssh-user
+#   SSH_KEY=~/.ssh/your-private-key
+
+CONF_FILE="${HOME}/.config/hermes-remote.conf"
+
+# Load config file if it exists
+if [ -f "$CONF_FILE" ]; then
+  # shellcheck source=/dev/null
+  . "$CONF_FILE"
+fi
+
+# Env vars take precedence over config file
+K8S_HOST="${HERMES_K8S_HOST:-${K8S_HOST:-}}"
+K8S_USER="${HERMES_K8S_USER:-${K8S_USER:-}}"
+SSH_KEY="${HERMES_SSH_KEY:-${SSH_KEY:-}}"
+
+if [ -z "$K8S_HOST" ] || [ -z "$K8S_USER" ]; then
+  echo "hermes-remote: missing configuration."
+  echo ""
+  echo "Create ~/.config/hermes-remote.conf:"
+  echo "  K8S_HOST=your-k8s-hostname-or-ip"
+  echo "  K8S_USER=your-ssh-user"
+  echo "  SSH_KEY=~/.ssh/your-private-key"
+  echo ""
+  echo "Or export environment variables:"
+  echo "  export HERMES_K8S_HOST=your-k8s-hostname"
+  echo "  export HERMES_K8S_USER=your-ssh-user"
+  exit 1
+fi
+
+SSH_ARGS=(-tt)
+if [ -n "$SSH_KEY" ]; then
+  SSH_ARGS+=(-i "$SSH_KEY")
+fi
+
+KUBECTL="sudo /var/lib/rancher/rke2/bin/kubectl --kubeconfig /etc/rancher/rke2/rke2.yaml"
+EXEC_BASE="$KUBECTL exec -it -n hermes-agent deploy/hermes-agent -c hermes-agent --"
+
+# --shell flag: drop into a raw bash shell inside the pod (for debugging)
+if [ "${1:-}" = "--shell" ]; then
+  ssh "${SSH_ARGS[@]}" "${K8S_USER}@${K8S_HOST}" "$EXEC_BASE bash"
+  exit $?
+fi
+
+# Normal mode: activate venv and run hermes
+# HERMES_HOME=/opt/data is set in the container env, so hermes finds
+# its config at /opt/data/config.yaml and secrets at /opt/data/.env.
+ssh "${SSH_ARGS[@]}" "${K8S_USER}@${K8S_HOST}" \
+  "$EXEC_BASE bash -c '. /opt/hermes/.venv/bin/activate && hermes $*'"
