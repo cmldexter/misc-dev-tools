@@ -2,28 +2,31 @@
 # hermes-remote — Instant Hermes Agent CLI from any workstation.
 #
 # Wraps SSH + kubectl exec into a single command so you can interact
-# with the Hermes Agent pod without manually chaining connections.
+# with Hermes Agent pods without manually chaining connections.
 #
 # Usage:
 #   hermes-remote                        # Interactive REPL (uses AGENT_DEFAULT)
-#   hermes-remote --agent anton          # Connect to specific agent container
+#   hermes-remote --agent <name>         # Connect to a specific agent
 #   hermes-remote -z "prompt"            # One-shot query
 #   hermes-remote --tui                  # TUI mode
 #   hermes-remote sessions list          # Any hermes subcommand
 #   hermes-remote --shell                # Drop into pod bash (debug)
+#   hermes-remote --list                 # List configured agents
 #
-# Configuration (checked in order):
-#   1. Environment variables: HERMES_K8S_HOST, HERMES_K8S_USER, HERMES_SSH_KEY
-#   2. Config file: ~/.config/hermes-remote.conf
-#   3. If neither is set, the script will exit with setup instructions.
-#
-# Config file format (~/.config/hermes-remote.conf):
+# Configuration: ~/.config/hermes-remote.conf
 #   K8S_HOST=your-k8s-hostname-or-ip
 #   K8S_USER=your-ssh-user
 #   SSH_KEY=~/.ssh/your-private-key
-#   AGENT_DEFAULT=your-default-agent  (e.g., jerome)
+#   AGENT_DEFAULT=your-default-agent
+#
+# Agent mapping: ~/.config/hermes-agents.conf
+#   Each line: <agent-name> <deployment> <container>
+#   Example:
+#     jerome  hermes-personal  jerome
+#     anton   hermes-anton     anton
 
 CONF_FILE="${HOME}/.config/hermes-remote.conf"
+AGENTS_FILE="${HOME}/.config/hermes-agents.conf"
 
 # Load config file if it exists
 if [ -f "$CONF_FILE" ]; then
@@ -35,7 +38,7 @@ fi
 K8S_HOST="${HERMES_K8S_HOST:-${K8S_HOST:-}}"
 K8S_USER="${HERMES_K8S_USER:-${K8S_USER:-}}"
 SSH_KEY="${HERMES_SSH_KEY:-${SSH_KEY:-}}"
-AGENT_DEFAULT="${HERMES_AGENT_DEFAULT:-${AGENT_DEFAULT:-hermes-agent}}"
+AGENT_DEFAULT="${HERMES_AGENT_DEFAULT:-${AGENT_DEFAULT:-}}"
 
 if [ -z "$K8S_HOST" ] || [ -z "$K8S_USER" ]; then
   echo "hermes-remote: missing configuration."
@@ -44,6 +47,7 @@ if [ -z "$K8S_HOST" ] || [ -z "$K8S_USER" ]; then
   echo "  K8S_HOST=your-k8s-hostname-or-ip"
   echo "  K8S_USER=your-ssh-user"
   echo "  SSH_KEY=~/.ssh/your-private-key"
+  echo "  AGENT_DEFAULT=your-default-agent"
   echo ""
   echo "Or export environment variables:"
   echo "  export HERMES_K8S_HOST=your-k8s-hostname"
@@ -54,6 +58,22 @@ fi
 SSH_ARGS=(-tt)
 if [ -n "$SSH_KEY" ]; then
   SSH_ARGS+=(-i "$SSH_KEY")
+fi
+
+# --list flag: show configured agents
+if [ "${1:-}" = "--list" ]; then
+  if [ ! -f "$AGENTS_FILE" ]; then
+    echo "No agents configured. Create $AGENTS_FILE"
+    exit 1
+  fi
+  echo "Configured agents (default: ${AGENT_DEFAULT:-none}):"
+  while read -r name deploy container; do
+    [[ "$name" =~ ^#.*$ || -z "$name" ]] && continue
+    marker=""
+    [ "$name" = "$AGENT_DEFAULT" ] && marker=" ← default"
+    echo "  $name → deploy/$deploy -c $container$marker"
+  done < "$AGENTS_FILE"
+  exit 0
 fi
 
 # Parse --agent flag
@@ -68,21 +88,38 @@ if [ "${1:-}" = "--agent" ] || [ "${1:-}" = "-a" ]; then
   fi
 fi
 
-KUBECTL="sudo /var/lib/rancher/rke2/bin/kubectl --kubeconfig /etc/rancher/rke2/rke2.yaml"
-
-# Dynamically locate which deployment contains the requested agent container
-JSON_PATH="{.items[?(@.spec.template.spec.containers[*].name=='$AGENT')].metadata.name}"
-FIND_DEPLOY_CMD="$KUBECTL get deploy -n hermes-agent -o jsonpath=\"$JSON_PATH\""
-
-# Execute lookup remotely over SSH
-DEPLOY=$(ssh "${SSH_ARGS[@]}" "${K8S_USER}@${K8S_HOST}" "$FIND_DEPLOY_CMD" | tr -d '\r')
-
-if [ -z "$DEPLOY" ]; then
-  echo "Error: No deployment found containing agent container: $AGENT"
+if [ -z "$AGENT" ]; then
+  echo "hermes-remote: no agent specified and AGENT_DEFAULT not set."
+  echo "  Use: hermes-remote --agent <name>"
+  echo "  Or set AGENT_DEFAULT in $CONF_FILE"
+  [ -f "$AGENTS_FILE" ] && echo "  Available: $(awk '!/^#/ && NF {print $1}' "$AGENTS_FILE" | tr '\n' ' ')"
   exit 1
 fi
 
-EXEC_BASE="$KUBECTL exec -it -n hermes-agent deploy/$DEPLOY -c $AGENT --"
+# Resolve agent → deployment + container from agents config
+DEPLOY=""
+CONTAINER=""
+if [ -f "$AGENTS_FILE" ]; then
+  while read -r name deploy container; do
+    [[ "$name" =~ ^#.*$ || -z "$name" ]] && continue
+    if [ "$name" = "$AGENT" ]; then
+      DEPLOY="$deploy"
+      CONTAINER="$container"
+      break
+    fi
+  done < "$AGENTS_FILE"
+fi
+
+if [ -z "$DEPLOY" ] || [ -z "$CONTAINER" ]; then
+  echo "Error: Agent '$AGENT' not found in $AGENTS_FILE"
+  echo ""
+  echo "Add a line like:"
+  echo "  $AGENT  <deployment-name>  <container-name>"
+  exit 1
+fi
+
+KUBECTL="sudo /var/lib/rancher/rke2/bin/kubectl --kubeconfig /etc/rancher/rke2/rke2.yaml"
+EXEC_BASE="$KUBECTL exec -it -n hermes-agent deploy/$DEPLOY -c $CONTAINER --"
 
 # --shell flag: drop into a raw bash shell inside the pod (for debugging)
 if [ "${1:-}" = "--shell" ]; then
