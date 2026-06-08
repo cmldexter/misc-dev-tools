@@ -5,7 +5,8 @@
 # with the Hermes Agent pod without manually chaining connections.
 #
 # Usage:
-#   hermes-remote                        # Interactive REPL
+#   hermes-remote                        # Interactive REPL (uses AGENT_DEFAULT)
+#   hermes-remote --agent anton          # Connect to specific agent container
 #   hermes-remote -z "prompt"            # One-shot query
 #   hermes-remote --tui                  # TUI mode
 #   hermes-remote sessions list          # Any hermes subcommand
@@ -20,6 +21,7 @@
 #   K8S_HOST=your-k8s-hostname-or-ip
 #   K8S_USER=your-ssh-user
 #   SSH_KEY=~/.ssh/your-private-key
+#   AGENT_DEFAULT=your-default-agent  (e.g., jerome)
 
 CONF_FILE="${HOME}/.config/hermes-remote.conf"
 
@@ -33,6 +35,7 @@ fi
 K8S_HOST="${HERMES_K8S_HOST:-${K8S_HOST:-}}"
 K8S_USER="${HERMES_K8S_USER:-${K8S_USER:-}}"
 SSH_KEY="${HERMES_SSH_KEY:-${SSH_KEY:-}}"
+AGENT_DEFAULT="${HERMES_AGENT_DEFAULT:-${AGENT_DEFAULT:-hermes-agent}}"
 
 if [ -z "$K8S_HOST" ] || [ -z "$K8S_USER" ]; then
   echo "hermes-remote: missing configuration."
@@ -53,8 +56,33 @@ if [ -n "$SSH_KEY" ]; then
   SSH_ARGS+=(-i "$SSH_KEY")
 fi
 
+# Parse --agent flag
+AGENT="$AGENT_DEFAULT"
+if [ "${1:-}" = "--agent" ] || [ "${1:-}" = "-a" ]; then
+  if [ -n "${2:-}" ]; then
+    AGENT="$2"
+    shift 2
+  else
+    echo "hermes-remote: missing agent name after $1"
+    exit 1
+  fi
+fi
+
 KUBECTL="sudo /var/lib/rancher/rke2/bin/kubectl --kubeconfig /etc/rancher/rke2/rke2.yaml"
-EXEC_BASE="$KUBECTL exec -it -n hermes-agent deploy/hermes-agent -c hermes-agent --"
+
+# Dynamically locate which deployment contains the requested agent container
+JSON_PATH="{.items[?(@.spec.template.spec.containers[*].name=='$AGENT')].metadata.name}"
+FIND_DEPLOY_CMD="$KUBECTL get deploy -n hermes-agent -o jsonpath=\"$JSON_PATH\""
+
+# Execute lookup remotely over SSH
+DEPLOY=$(ssh "${SSH_ARGS[@]}" "${K8S_USER}@${K8S_HOST}" "$FIND_DEPLOY_CMD" | tr -d '\r')
+
+if [ -z "$DEPLOY" ]; then
+  echo "Error: No deployment found containing agent container: $AGENT"
+  exit 1
+fi
+
+EXEC_BASE="$KUBECTL exec -it -n hermes-agent deploy/$DEPLOY -c $AGENT --"
 
 # --shell flag: drop into a raw bash shell inside the pod (for debugging)
 if [ "${1:-}" = "--shell" ]; then
@@ -63,7 +91,5 @@ if [ "${1:-}" = "--shell" ]; then
 fi
 
 # Normal mode: activate venv and run hermes
-# HERMES_HOME=/opt/data is set in the container env, so hermes finds
-# its config at /opt/data/config.yaml and secrets at /opt/data/.env.
 ssh "${SSH_ARGS[@]}" "${K8S_USER}@${K8S_HOST}" \
   "$EXEC_BASE bash -c '. /opt/hermes/.venv/bin/activate && hermes $*'"
