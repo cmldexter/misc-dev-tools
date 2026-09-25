@@ -19,7 +19,11 @@ After modifying your profile, reload your shell (e.g. `source ~/.zshrc`) or rest
 ### `sync-gitlab-github`
 Fetches all remote branches from a specified `github` remote and pushes them directly to an `origin` (GitLab) remote to ensure both repositories are synchronized. 
 
-**When to use:** Use this script when you maintain mirrors between GitHub and GitLab and need a quick, forceful synchronization to pull all branches from GitHub and push them identically to GitLab. It's particularly useful in cases where automatic CI/CD mirroring fails or trails behind.
+**When to use:** After merging on GitHub, to carry the merge (and every other GitHub branch) to GitLab. Since 2026-09-25 this is the **only** GitHub → GitLab path, and because a GitLab push deploys (ArgoCD, CI on push) it is **the deploy gate**: merge on GitHub, run this in `~/Documents/GitLab/<repo>`, then verify the merge commit is on GitLab `main`.
+
+The reverse direction (GitLab → GitHub, e.g. CI write-back commits) is gsx-infra's `sync-to-github` job — a fast-forward-only scheduled pipeline. The old GitLab → GitHub push mirrors were deleted on 2026-09-25 because they rewound GitHub merges; never re-create one.
+
+The script cycles through every GitHub branch, so delete merged branches after merging (or sweep them with `~/Documents/GitHub/.worktrees/_branch-cleanup/cleanup-branches.sh`, dry-run by default, `--apply` to delete) to keep it fast.
 
 #### Troubleshooting: GitHub `main` is ahead of GitLab
 
